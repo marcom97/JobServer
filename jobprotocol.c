@@ -87,7 +87,7 @@ char* get_next_msg(Buffer* buf, int* len, NewlineType ntype) {
 
 void shift_buffer(Buffer *buf) {
     int chars_left = buf->inbuf - buf->consumed;
-    memmove(buf, buf + buf->consumed, chars_left);
+    memmove(buf->buf, buf->buf + buf->consumed, chars_left);
     buf->inbuf = chars_left;
     buf->consumed = 0;
 }

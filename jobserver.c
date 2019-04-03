@@ -102,6 +102,13 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
     while ((msg = get_next_msg(client_buf, &msg_len, NEWLINE_CRLF)) != NULL) {
         msg[msg_len - 2] = '\0';
 
+        int log_len;
+        char cmd_log[BUFSIZE + 1];
+        snprintf(cmd_log, BUFSIZE, "[CLIENT %d] %s", client_fd, msg);
+        log_len = strlen(cmd_log);
+        cmd_log[log_len] = '\n';
+        write(STDOUT_FILENO, cmd_log, log_len + 1);
+        
         JobCommand command = get_job_command(msg);
 
         switch (command) {
@@ -111,23 +118,14 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
                 break;
             case CMD_KILLJOB:
                 break;
-            default:
-            {    
+            default:    
                 announce_fstr_to_client(client_fd, "[SERVER] Invalid command: %s", msg);
-                // char buf[BUFSIZE + 1] = "[SERVER] Invalid command: ";
-                // strncat(buf, msg, BUFSIZE - strlen(buf) - 2);
-                // announce_str_to_client(client_fd, buf);
-            }
         }
 
     }
 
     if (is_buffer_full(client_buf) && client_buf->consumed == 0) {
-        char buf[BUFSIZE] = "[SERVER] Invalid command: ";
-        memmove(buf + strlen(buf), client_buf->buf, BUFSIZE - strlen(buf) - 2);
-        announce_buf_to_client(client_fd, buf, BUFSIZE - 2);
-        
-        client_buf->consumed = BUFSIZE;
+        client_buf->consumed = 1;
     }
 
     shift_buffer(client_buf);

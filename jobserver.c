@@ -14,7 +14,7 @@
 #include "jobprotocol.h"
 
 #define QUEUE_LENGTH 5
-#define MAX_CLIENTS 2
+#define MAX_CLIENTS 20
 
 #ifndef JOBS_DIR
     #define JOBS_DIR "jobs/"
@@ -43,45 +43,10 @@ void sigint_handler(int code) {
 void sigchld_handler(int code) {
 }
 
-/*
- *  Misc
- */
-
-/* Return the highest fd between all clients and job pipes.
- */
-int get_highest_fd(int listen_fd, Client *clients, JobList *job_list) {
-    int max = listen_fd;
-
-    for (int i = 0; i < client_count; i++) {
-        int client_socket = clients[i].socket_fd;
-        if (client_socket > max) {
-            max = client_socket;
-        }
-    }
-
-    JobNode *current = job_list->first;
-    for (int i = 0; i < job_list->count; i++) {
-        if (current->stdout_fd > max) {
-            max = current->stdout_fd;
-        }
-
-        if (current->stderr_fd > max) {
-            max = current->stderr_fd;
-        }
-
-        current = current->next;
-    }
-
-    return max;
-}
-
-/* Frees up all memory and exits.
- */
-void clean_exit(int listen_fd, Client *clients, JobList *job_list, int exit_status) {
-    // free(self);
-    close(listen_fd);
-    exit(exit_status);
-}
+int announce_buf_to_client(int client_fd, char *buf, int buflen);
+int announce_str_to_client(int client_fd, char* str);
+int announce_fstr_to_client(int client_fd, const char *format, ...);
+int get_highest_fd(int listen_fd, Client *clients, JobList *job_list);
 
 /*
  *  Client management
@@ -121,19 +86,52 @@ int remove_client(int listen_fd, int client_index, Client *clients, JobList *job
  * Return their fd if it has been closed or 0 otherwise.
  */
 int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
-    if (is_buffer_full(&(client->buffer))) {
-        return 0;
-    }
+    Buffer *client_buf = &(client->buffer);
+    int client_fd = client->socket_fd;
 
-    int read_res = read_to_buf(client->socket_fd, &(client->buffer));
+    int read_res = read_to_buf(client_fd, client_buf);
     if (read_res == 0) {
-        return client->socket_fd;
+        return client_fd;
     } else if (read_res == -1) {
         return 0;
     }
 
     // TODO: Handle requests in buffer
-    
+    int msg_len;
+    char *msg;
+    while ((msg = get_next_msg(client_buf, &msg_len, NEWLINE_CRLF)) != NULL) {
+        msg[msg_len - 2] = '\0';
+
+        JobCommand command = get_job_command(msg);
+
+        switch (command) {
+            case CMD_LISTJOBS:
+                break;
+            case CMD_RUNJOB:
+                break;
+            case CMD_KILLJOB:
+                break;
+            default:
+            {    
+                announce_fstr_to_client(client_fd, "[SERVER] Invalid command: %s", msg);
+                // char buf[BUFSIZE + 1] = "[SERVER] Invalid command: ";
+                // strncat(buf, msg, BUFSIZE - strlen(buf) - 2);
+                // announce_str_to_client(client_fd, buf);
+            }
+        }
+
+    }
+
+    if (is_buffer_full(client_buf) && client_buf->consumed == 0) {
+        char buf[BUFSIZE] = "[SERVER] Invalid command: ";
+        memmove(buf + strlen(buf), client_buf->buf, BUFSIZE - strlen(buf) - 2);
+        announce_buf_to_client(client_fd, buf, BUFSIZE - 2);
+        
+        client_buf->consumed = BUFSIZE;
+    }
+
+    shift_buffer(client_buf);
+
     return 0;
 }
 
@@ -144,26 +142,61 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
 /* Write a string to a client.
  * Returns 0 on success, 1 on failed/incomplete write, or -1 in case of error.
  */
-int write_buf_to_client(int client_fd, char *buf, int buflen);
+int write_buf_to_client(int client_fd, char *buf, int buflen) {
+    int nbytes = write(client_fd, buf, buflen);
+    if (nbytes == buflen) {
+        return 0;
+    }
+    if (nbytes < 0) {
+        return -1;
+    }
+    return 1;
+}
 
 
 /* Print message to stdout, and send network-newline message to a client.
  * Returns 0 on success, 1 on failed/incomplete write, or -1 in case of error.
  */
-int announce_buf_to_client(int client_fd, char *buf, int buflen);
+int announce_buf_to_client(int client_fd, char *buf, int buflen) {
+    buf[buflen] = '\n';
+    write(STDOUT_FILENO, buf, buflen + 1);
+
+    buf[buflen] = '\r';
+    buf[buflen + 1] = '\n';
+    return write_buf_to_client(client_fd, buf, buflen + 2);
+}
 
 
 /* Print string to stdout, and send network-newline string to a client.
  * Returns 0 on success, 1 on failed/incomplete write, 2 if the string
  * is too large, or -1 in case of error.
  */
-int announce_str_to_client(int client_fd, char* str);
+int announce_str_to_client(int client_fd, char* str) {
+    int len = strlen(str);
+    if (len > BUFSIZE - 2) {
+        return 2;
+    }
+
+    char buf[BUFSIZE];
+    strncpy(buf, str, BUFSIZE - 2);
+    return announce_buf_to_client(client_fd, buf, len);
+}
 
 /* Print formatted string to stdout, and send network-newline string to a client.
  * Returns 0 on success, 1 on failed/incomplete write, 2 if the string
  * is too large, or -1 in case of error.
  */
-int announce_fstr_to_client(int client_fd, const char *format, ...);
+int announce_fstr_to_client(int client_fd, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+
+    char msg[BUFSIZE + 1]; // vsnprintf will add a NULL terminator, so we need +1 byte
+    vsnprintf(msg, BUFSIZE - 1, format, args); // need to make sure we have space for \r\n
+
+    va_end(args);
+
+    return announce_str_to_client(client_fd, msg);
+}
 
 
 /*
@@ -212,6 +245,46 @@ int process_dead_children(JobList *job_list, fd_set *all_fds);
  */
 JobNode *process_dead_child(JobList *job_list, JobNode *dead_job, fd_set *all_fds);
 
+/*
+ *  Misc
+ */
+
+/* Return the highest fd between all clients and job pipes.
+ */
+int get_highest_fd(int listen_fd, Client *clients, JobList *job_list) {
+    int max = listen_fd;
+
+    for (int i = 0; i < client_count; i++) {
+        int client_socket = clients[i].socket_fd;
+        if (client_socket > max) {
+            max = client_socket;
+        }
+    }
+
+    JobNode *current = job_list->first;
+    for (int i = 0; i < job_list->count; i++) {
+        if (current->stdout_fd > max) {
+            max = current->stdout_fd;
+        }
+
+        if (current->stderr_fd > max) {
+            max = current->stderr_fd;
+        }
+
+        current = current->next;
+    }
+
+    return max;
+}
+
+/* Frees up all memory and exits.
+ */
+void clean_exit(int listen_fd, Client *clients, JobList *job_list, int exit_status) {
+    // free(self);
+    close(listen_fd);
+    exit(exit_status);
+}
+
 int main(void) {
     // Reset SIGINT received flag.
     sigint_received = 0;
@@ -223,10 +296,12 @@ int main(void) {
 
     // Set up SIGCHLD handler
     struct sigaction sigchld_act = {{sigchld_handler}};
+    sigchld_act.sa_flags = SA_RESTART;
     sigaction(SIGCHLD, &sigchld_act, NULL);
     
     // Set up SIGINT handler
     struct sigaction sigint_act = {{sigint_handler}};
+    sigint_act.sa_flags = SA_RESTART;
     sigaction(SIGINT, &sigint_act, NULL);
 
     // Set up server socket

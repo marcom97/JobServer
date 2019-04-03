@@ -96,14 +96,13 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
         return 0;
     }
 
-    // TODO: Handle requests in buffer
     int msg_len;
     char *msg;
     while ((msg = get_next_msg(client_buf, &msg_len, NEWLINE_CRLF)) != NULL) {
         msg[msg_len - 2] = '\0';
 
         int log_len;
-        char cmd_log[BUFSIZE + 1];
+        char cmd_log[BUFSIZE];
         snprintf(cmd_log, BUFSIZE, "[CLIENT %d] %s", client_fd, msg);
         log_len = strlen(cmd_log);
         cmd_log[log_len] = '\n';
@@ -113,6 +112,16 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
 
         switch (command) {
             case CMD_LISTJOBS:
+                    if (job_list->first == NULL) {
+                        announce_str_to_client(client_fd, "[SERVER] No currently running jobs");
+                    } else {
+                        char jobs[BUFSIZE + 1] = "";
+                        for (JobNode *job = job_list->first; job != NULL; 
+                                job = job->next) {
+                            snprintf(jobs, BUFSIZE + 1, "%s %d", jobs, job->pid);
+                        }
+                        announce_fstr_to_client(client_fd, "[SERVER] %s", jobs);
+                    }
                 break;
             case CMD_RUNJOB:
                 break;

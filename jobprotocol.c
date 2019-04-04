@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
 
 #include "jobprotocol.h"
 
@@ -11,23 +12,41 @@ int find_newline(const char *buf, int len);
 */ 
 
 JobCommand get_job_command(char* str) {
-    if (strncmp(str, "jobs", BUFSIZE + 1) == 0) {
+    if (strlen(str) == 0) {
+        return CMD_INVALID;
+    }
+    
+    char *command = strtok(str, " ");
+
+    if (strncmp(command, "jobs", BUFSIZE + 1) == 0) {
         return CMD_LISTJOBS;
     }
-    if (strncmp(str, "run", BUFSIZE + 1) == 0) {
+    if (strncmp(command, "run", BUFSIZE + 1) == 0) {
         return CMD_RUNJOB;
     }
-    if (strncmp(str, "kill", BUFSIZE + 1) == 0) {
+    if (strncmp(command, "kill", BUFSIZE + 1) == 0) {
         return CMD_KILLJOB;
     }
-    if (strncmp(str, "watch", BUFSIZE + 1) == 0) {
+    if (strncmp(command, "watch", BUFSIZE + 1) == 0) {
         return CMD_WATCHJOB;
     }
-    if (strncmp(str, "exit", BUFSIZE + 1) == 0) {
+    if (strncmp(command, "exit", BUFSIZE + 1) == 0) {
         return CMD_EXIT;
     }
 
     return CMD_INVALID;
+}
+
+int kill_job(JobList *job_list, int pid) {
+    for (JobNode *job = job_list->first; job != NULL; job = job->next) {
+        if (job->pid == pid) {
+            if (kill(pid, SIGKILL) < 0) {
+                return -1;
+            }
+            return 0;
+        }
+    }
+    return 1;
 }
 
 int find_network_newline(const char *buf, int n) {

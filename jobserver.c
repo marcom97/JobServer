@@ -108,7 +108,9 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
         cmd_log[log_len] = '\n';
         write(STDOUT_FILENO, cmd_log, log_len + 1);
         
-        JobCommand command = get_job_command(msg);
+        char cpy[msg_len - 1];
+        strncpy(cpy, msg, msg_len - 1);
+        JobCommand command = get_job_command(cpy);
 
         switch (command) {
             case CMD_LISTJOBS:
@@ -126,7 +128,16 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
             case CMD_RUNJOB:
                 break;
             case CMD_KILLJOB:
+                {
+                char *pid_str = strtok(NULL, " ");
+                int pid;
+                if (pid_str == NULL || (pid = strtol(pid_str, NULL, 10)) <= 0) {
+                    announce_fstr_to_client(client_fd, "[SERVER] Invalid command: %s", msg);
+                } else if (kill_job(job_list, pid) == 1) {
+                    announce_fstr_to_client(client_fd, "[SERVER] Job %d not found", pid);
+                }
                 break;
+                }
             default:    
                 announce_fstr_to_client(client_fd, "[SERVER] Invalid command: %s", msg);
         }

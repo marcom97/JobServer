@@ -42,6 +42,10 @@ void sigint_handler(int code) {
 
 // TODO: SIGCHLD (child stopped or terminated) handler: mark jobs as dead
 void sigchld_handler(int code) {
+    int stat;
+    int pid = wait(&stat);
+
+    mark_job_dead(&job_list, pid, stat);
 }
 
 int announce_buf_to_client(int client_fd, char *buf, int buflen);
@@ -115,17 +119,23 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
 
         switch (command) {
             case CMD_LISTJOBS:
-                    if (job_list->first == NULL) {
-                        announce_str_to_client(client_fd, "[SERVER] No currently running jobs");
-                    } else {
-                        char jobs[BUFSIZE + 1] = "";
-                        for (JobNode *job = job_list->first; job != NULL; 
-                                job = job->next) {
-                            snprintf(jobs, BUFSIZE + 1, "%s %d", jobs, job->pid);
-                        }
-                        announce_fstr_to_client(client_fd, "[SERVER]%s", jobs);
+            {
+                char jobs[BUFSIZE + 1] = "";
+                for (JobNode *job = job_list->first; job != NULL; 
+                        job = job->next) {
+                    if (!(job->dead)) {
+                        snprintf(jobs, BUFSIZE + 1, "%s %d", 
+                                jobs, job->pid);
                     }
+                }
+                if (jobs[0] == '\0') {
+                    announce_str_to_client(client_fd, "[SERVER] No currently running jobs");
+                } else {
+                    announce_fstr_to_client(client_fd, "[SERVER]%s", jobs);
+                }
+                        
                 break;
+            }
             case CMD_RUNJOB:
                 if (job_list->count >= MAX_JOBS) {
                     announce_str_to_client(client_fd, "[SERVER] MAXJOBS exceeded");

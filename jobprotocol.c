@@ -114,6 +114,17 @@ int kill_job(JobList *job_list, int pid) {
     return 1;
 }
 
+int mark_job_dead(JobList *job_list, int pid, int stat) {
+    for (JobNode *job = job_list->first; job != NULL; job = job->next) {
+        if (job->pid == pid) {
+            job->dead = 1;
+            job->wait_status = stat;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 int find_network_newline(const char *buf, int n) {
     for (int i = 0; i < n - 1; i++) {
         if (buf[i] == '\r' && buf[i + 1] == '\n') {

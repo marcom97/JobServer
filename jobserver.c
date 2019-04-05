@@ -36,6 +36,7 @@ int client_count;
  * handlers with care, to avoid issues with async-signal-safety.
  */
 void sigint_handler(int code) {
+    write(STDOUT_FILENO, "\n", 1);
     sigint_received = 1;
 }
 
@@ -340,8 +341,20 @@ int get_highest_fd(int listen_fd, Client *clients, JobList *job_list) {
 /* Frees up all memory and exits.
  */
 void clean_exit(int listen_fd, Client *clients, JobList *job_list, int exit_status) {
-    // free(self);
     close(listen_fd);
+
+    char msg[] = "[SERVER] Shutting down\r\n";
+    for (int i = 0; i < client_count; i++) {
+        int socket = clients[i].socket_fd;
+        write_buf_to_client(socket, msg, sizeof(msg) - 1);
+        close(socket);
+    }
+    char log[] = "[SERVER] Shutting down\n";
+    write(STDOUT_FILENO, log, sizeof(log) - 1);
+
+    //kill_all_jobs(job_list);
+    //empty_job_list(job_list);
+
     exit(exit_status);
 }
 
@@ -408,15 +421,15 @@ int main(void) {
                     if (client_fd > 0) {
                         nfds = remove_client(listen_fd, i, clients, &job_list)
                                                                             + 1;
+                        char close_log[BUFSIZE + 1];
+                        snprintf(close_log, BUFSIZE + 1, 
+                                "[CLIENT %d] Connection closed", client_fd);
+                        int len = strlen(close_log);
+                        close_log[len] = '\n';
+                        write(STDOUT_FILENO, close_log, len + 1);
                     }
                 }
             }
-         /* Here is a snippet of code to create the name of an executable
-         * to execute:
-         *
-         * char exe_file[BUFSIZE];
-         * snprintf(exe_file, BUFSIZE, "%s/%s", JOBS_DIR, <job_name>);
-         */
         }
     }
 

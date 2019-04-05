@@ -72,6 +72,7 @@ int add_job(JobList *job_list, JobNode* job) {
     }
 
     last->next = job;
+    job_list->count++;
     return 0;
 }
 

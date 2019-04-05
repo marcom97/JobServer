@@ -1,6 +1,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "jobprotocol.h"
 
@@ -10,6 +12,68 @@
 // First argument is a string, second argument is the length of the string
 int find_newline(const char *buf, int len);
 */ 
+
+JobNode* start_job(char *path, char *const args[]) {
+    JobNode *job = malloc(sizeof(JobNode));
+    if (job == NULL) {
+        perror("malloc");
+        return NULL;
+    }
+    memset(job, 0, sizeof(JobNode));
+
+    int stdout_pipe[2];
+    int stderr_pipe[2];
+    if (pipe(stdout_pipe) < 0 || pipe(stderr_pipe) < 0) {
+        perror("pipe");
+        free(job);
+        return NULL;
+    }
+
+    int pid;
+    if ((pid = fork()) < 0) {
+        perror("fork");
+        close(stdout_pipe[PIPE_READ]);
+        close(stdout_pipe[PIPE_WRITE]);
+        close(stderr_pipe[PIPE_READ]);
+        close(stderr_pipe[PIPE_WRITE]);
+        free(job);
+        return NULL;
+    } else if (pid == 0) {
+        close(stdout_pipe[PIPE_READ]);
+        close(stderr_pipe[PIPE_READ]);
+
+        dup2(stdout_pipe[PIPE_WRITE], STDOUT_FILENO);
+        dup2(stderr_pipe[PIPE_WRITE], STDERR_FILENO);
+
+        execv(path, args);
+        perror("exec");
+        exit(1);
+    }
+
+    close(stdout_pipe[PIPE_WRITE]);
+    close(stderr_pipe[PIPE_WRITE]);
+
+    job->pid = pid;
+    job->stdout_fd = stdout_pipe[PIPE_READ];
+    job->stderr_fd = stderr_pipe[PIPE_READ];
+
+    return job;
+}
+
+int add_job(JobList *job_list, JobNode* job) {
+    if (job_list->first == NULL) {
+        job_list->first = job;
+        return 0;
+    }
+    
+    JobNode *last = job_list->first;
+    while(last->next != NULL) {
+        last = last->next;
+    }
+
+    last->next = job;
+    return 0;
+}
 
 JobCommand get_job_command(char* str) {
     if (strlen(str) == 0) {

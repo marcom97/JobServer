@@ -122,10 +122,52 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
                                 job = job->next) {
                             snprintf(jobs, BUFSIZE + 1, "%s %d", jobs, job->pid);
                         }
-                        announce_fstr_to_client(client_fd, "[SERVER] %s", jobs);
+                        announce_fstr_to_client(client_fd, "[SERVER]%s", jobs);
                     }
                 break;
             case CMD_RUNJOB:
+                if (job_list->count >= MAX_JOBS) {
+                    announce_str_to_client(client_fd, "[SERVER] MAXJOBS exceeded");
+                } else {
+                    char *name = strtok(NULL, " ");
+                    if (name == NULL) {
+                        announce_fstr_to_client(client_fd, "[SERVER] Invalid command: %s", msg);
+                    } else {
+                        char exe_file[BUFSIZE];
+                        snprintf(exe_file, BUFSIZE, "%s/%s", JOBS_DIR, name);
+                        if (strchr(msg, '/') != NULL) {
+                            announce_fstr_to_client(client_fd, "[SERVER] Invalid command: %s", msg);
+                        } else {
+                            char *args[BUFSIZE];
+                            args[0] = name;
+                            int i = 1;
+                            char *arg;
+                            while ((arg = strtok(NULL, " ")) != NULL) {
+                                args[i] = arg;
+                                i++;
+                            }
+                            args[i] = NULL;
+
+                            JobNode *job = start_job(exe_file, args);
+                            if (job == NULL) {
+                                sigint_received = 1;
+                            } else {
+                                WatcherNode *watcher = malloc(sizeof(WatcherNode));
+                                if (watcher == NULL) {
+                                    perror("malloc");
+                                    sigint_received = 1;
+                                } else {
+                                    watcher->client_fd = client_fd;
+                                    watcher->next = NULL;
+                                    job->watcher_list.first = watcher;
+                                    job->watcher_list.count = 1;
+                                    add_job(job_list, job);
+                                    announce_fstr_to_client(client_fd, "[SERVER] Job %d created", job->pid);
+                                }
+                            }
+                        }
+                    }
+                }
                 break;
             case CMD_KILLJOB:
                 {
@@ -333,7 +375,6 @@ int main(void) {
     Client clients[MAX_CLIENTS] = {0};
 
     // Initialize job tracking structure (linked list)
-    job_list.next = &(job_list.first);
     
     // Set up fd set(s) that we want to pass to select()
     fd_set readfds;

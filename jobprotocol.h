@@ -63,7 +63,6 @@ typedef struct job_node JobNode;
 
 struct job_list {
 	struct job_node* first;
-    struct job_node** next;
     int count;
 };
 typedef struct job_list JobList;

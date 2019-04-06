@@ -63,6 +63,7 @@ JobNode* start_job(char *path, char *const args[]) {
 int add_job(JobList *job_list, JobNode* job) {
     if (job_list->first == NULL) {
         job_list->first = job;
+        job_list->count++;
         return 0;
     }
     

@@ -125,6 +125,35 @@ int mark_job_dead(JobList *job_list, int pid, int stat) {
     return -1;
 }
 
+int delete_job_node(JobNode *job) {
+    close(job->stdout_fd);
+    close(job->stderr_fd);
+
+    empty_watcher_list(&(job->watcher_list));
+
+    free(job);
+    return 0;
+}
+
+int empty_watcher_list(WatcherList *watchers) {
+    free(watchers->first);
+    watchers->first = NULL;
+
+    return 0;
+}
+
+int kill_job_node(JobNode *job) {
+    if (job == NULL) {
+        return 1;
+    }
+
+    if (kill(job->pid, SIGKILL) < 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
 int find_network_newline(const char *buf, int n) {
     for (int i = 0; i < n - 1; i++) {
         if (buf[i] == '\r' && buf[i + 1] == '\n') {

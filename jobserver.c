@@ -84,6 +84,8 @@ int remove_client(int listen_fd, int client_index, Client *clients, JobList *job
         clients[i] = clients[i + 1];
     }
 
+    // TODO: Remove client from jobs and kill empty jobs
+
     return get_highest_fd(listen_fd, clients, job_list);
 }
 
@@ -173,6 +175,8 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
                                     job->watcher_list.first = watcher;
                                     job->watcher_list.count = 1;
                                     add_job(job_list, job);
+                                    FD_SET(job->stdout_fd, all_fds);
+                                    FD_SET(job->stderr_fd, all_fds);
                                     announce_fstr_to_client(client_fd, "[SERVER] Job %d created", job->pid);
                                 }
                             }
@@ -181,7 +185,7 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
                 }
                 break;
             case CMD_KILLJOB:
-                {
+            {
                 char *pid_str = strtok(NULL, " ");
                 int pid;
                 if (pid_str == NULL || (pid = strtol(pid_str, NULL, 10)) <= 0) {
@@ -190,7 +194,7 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
                     announce_fstr_to_client(client_fd, "[SERVER] Job %d not found", pid);
                 }
                 break;
-                }
+            }
             default:    
                 announce_fstr_to_client(client_fd, "[SERVER] Invalid command: %s", msg);
         }
@@ -296,20 +300,98 @@ int announce_fstr_to_watchers(WatcherList *watcher_list, const char *format, ...
  *  Childcare
  */
 
+void process_job_output(JobNode *job_node, int fd, Buffer *buffer, char *format);
+int process_dead_children(JobList *job_list, fd_set *all_fds);
+JobNode *process_dead_child(JobList *job_list, JobNode *dead_job, fd_set *all_fds);
+
 /* Process output from each child, remove them if they are dead, announce to watchers.
  * Returns 1 if at least one child exists, 0 otherwise.
  */
-int process_jobs(JobList *job_list, fd_set *current_fds, fd_set *all_fds);
+int process_jobs(JobList *job_list, fd_set *current_fds, fd_set *all_fds) {
+    if (job_list->first == NULL) {
+        return 0;
+    }
+
+    for (JobNode *job = job_list->first; job != NULL; job = job->next) {
+        if (FD_ISSET(job->stdout_fd, current_fds)) {
+            process_job_output(job, job->stdout_fd, &(job->stdout_buffer), "[JOB %d] %s");
+        }
+        if (FD_ISSET(job->stderr_fd, current_fds)) {
+            process_job_output(job, job->stderr_fd, &(job->stderr_buffer), "*(JOB %d)* %s");
+        }
+    }
+
+    process_dead_children(job_list, all_fds);
+    return 1;
+}
 
 /* Read characters from fd and store them in buffer. Announce each message found
  * to watchers of job_node with the given format, eg. "[JOB %d] %s\n".
  */
-void process_job_output(JobNode *job_node, int fd, Buffer *buffer, char *format);
+void process_job_output(JobNode *job_node, int fd, Buffer *buffer, char *format)
+{
+    if (read_to_buf(fd, buffer) < 0) {
+        return;
+    } 
+
+    WatcherList *watchers = &(job_node->watcher_list);
+    WatcherNode *first = watchers->first;
+
+    int msg_len;
+    char *msg;
+    while ((msg = get_next_msg(buffer, &msg_len, NEWLINE_LF)) != NULL) {
+        msg[msg_len - 1] = '\0';
+        
+        announce_fstr_to_client(first->client_fd, format, job_node->pid, msg);
+    }
+
+    if (is_buffer_full(buffer) && buffer->consumed == 0) {
+        announce_fstr_to_client(first->client_fd, 
+                        "*(SERVER)* Buffer from job %d is full. Aborting job.", 
+                        job_node->pid);
+        kill_job_node(job_node);
+    }
+
+    shift_buffer(buffer);
+}
 
 /* Remove all dead children from job list, announce to watchers.
  * Returns count of dead jobs removed.
  */
-int process_dead_children(JobList *job_list, fd_set *all_fds);
+int process_dead_children(JobList *job_list, fd_set *all_fds) {
+    int dead_children = 0;
+  
+    JobNode **tail = &(job_list->first);
+
+    for (JobNode *job = job_list->first; job != NULL; job = *tail) {
+        if (job->dead) {
+            *tail = job->next;
+
+            WatcherList *watchers = &(job->watcher_list);
+            WatcherNode *first_watcher = watchers->first;
+            
+            if (WIFEXITED(job->wait_status)) {
+                announce_fstr_to_client(first_watcher->client_fd, 
+                        "[JOB %d] Exited with status %d", job->pid, 
+                        WEXITSTATUS(job->wait_status));
+            } else {
+                announce_fstr_to_client(first_watcher->client_fd, 
+                        "[Job %d] Exited due to signal.", job->pid);
+            }
+
+            FD_CLR(job->stdout_fd, all_fds);
+            FD_CLR(job->stderr_fd, all_fds);
+            delete_job_node(job);
+
+            job_list->count--;
+            dead_children++;
+        } else {
+            tail = &(job->next);
+        }
+    }
+
+    return dead_children;
+}
 
 /* Remove the given child from the job list, announce to watchers.
  * Returns the next node that the job pointed to.
@@ -421,6 +503,9 @@ int main(void) {
                 }
             }
             // Check our job pipes, update max_fd if we got children
+            if (process_jobs(&job_list, &retread, &readfds) > 0) {
+                nfds = get_highest_fd(listen_fd, clients, &job_list) + 1;
+            }
 
             // Check on all the connected clients, process any requests
 	    // or deal with any dead connections etc.
@@ -431,15 +516,23 @@ int main(void) {
                     if (client_fd > 0) {
                         nfds = remove_client(listen_fd, i, clients, &job_list)
                                                                             + 1;
+                        FD_CLR(client_fd, &readfds);
+           
                         char close_log[BUFSIZE + 1];
                         snprintf(close_log, BUFSIZE + 1, 
                                 "[CLIENT %d] Connection closed", client_fd);
                         int len = strlen(close_log);
                         close_log[len] = '\n';
                         write(STDOUT_FILENO, close_log, len + 1);
+                    } else {
+                        nfds = get_highest_fd(listen_fd, clients, &job_list)
+                                                                            + 1;
                     }
                 }
             }
+        } else if (errno == EINTR) {
+            process_dead_children(&job_list, &readfds);
+            nfds = get_highest_fd(listen_fd, clients, &job_list) + 1;
         }
     }
 

@@ -376,7 +376,7 @@ int process_dead_children(JobList *job_list, fd_set *all_fds) {
                         WEXITSTATUS(job->wait_status));
             } else {
                 announce_fstr_to_client(first_watcher->client_fd, 
-                        "[Job %d] Exited due to signal.", job->pid);
+                        "[Job %d] Exited due to signal", job->pid);
             }
 
             FD_CLR(job->stdout_fd, all_fds);

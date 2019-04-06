@@ -330,7 +330,7 @@ int process_jobs(JobList *job_list, fd_set *current_fds, fd_set *all_fds) {
  */
 void process_job_output(JobNode *job_node, int fd, Buffer *buffer, char *format)
 {
-    if (read_to_buf(fd, buffer) < 0) {
+    if (is_buffer_full(buffer) || read_to_buf(fd, buffer) < 0) {
         return;
     } 
 

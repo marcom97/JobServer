@@ -155,12 +155,28 @@ int kill_job_node(JobNode *job) {
     return 0;
 }
 
+int add_watcher(WatcherList *watchers, int client_fd) {
+    WatcherNode *watcher = malloc(sizeof(WatcherNode));
+    if (watcher == NULL) {
+        perror("malloc");
+        return -1;
+    }
+
+    watcher->client_fd = client_fd;
+    watcher->next = watchers->first;
+    watchers->first = watcher;
+    watchers->count++;
+
+    return 0;
+}
+
 int remove_watcher(WatcherList *watcher_list, int client_fd) {
     WatcherNode **previous = &(watcher_list->first);
     for (WatcherNode *watcher = watcher_list->first; watcher != NULL; watcher = watcher->next) {
         if (watcher->client_fd == client_fd) {
             *previous = watcher->next;
             delete_watcher_node(watcher);
+            watcher_list->count--;
             return 0;
         }
         previous = &(watcher->next);
@@ -173,6 +189,25 @@ void remove_client_from_all_watchers(JobList *job_list, int client_fd) {
     for (JobNode *job = job_list->first; job != NULL; job = job->next) {
         remove_watcher(&(job->watcher_list), client_fd);
     }
+}
+
+int add_watcher_by_pid(JobList *job_list, int pid, int client_fd) {
+    for (JobNode *job = job_list->first; job != NULL; job = job->next) {
+        if (job->pid == pid) {
+            return add_watcher(&(job->watcher_list), client_fd);
+        }
+    }
+    return 1;
+} 
+
+int remove_watcher_by_pid(JobList *job_list, int pid, int client_fd) {
+    for (JobNode *job = job_list->first; job != NULL; job = job->next) {
+        if (job->pid == pid) {
+            int result = remove_watcher(&(job->watcher_list), client_fd);
+            return result ? 2 : 0;
+        }
+    }
+    return 1;
 }
 
 int delete_watcher_node(WatcherNode *watcher) {

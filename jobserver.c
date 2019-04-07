@@ -166,22 +166,17 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
 
                             JobNode *job = start_job(exe_file, args);
                             if (job == NULL) {
-                                sigint_received = 1;
+                                return 0;
                             } else {
-                                WatcherNode *watcher = malloc(sizeof(WatcherNode));
-                                if (watcher == NULL) {
-                                    perror("malloc");
-                                    sigint_received = 1;
-                                } else {
-                                    watcher->client_fd = client_fd;
-                                    watcher->next = NULL;
-                                    job->watcher_list.first = watcher;
-                                    job->watcher_list.count = 1;
-                                    add_job(job_list, job);
-                                    FD_SET(job->stdout_fd, all_fds);
-                                    FD_SET(job->stderr_fd, all_fds);
-                                    announce_fstr_to_client(client_fd, "[SERVER] Job %d created", job->pid);
+                                if (add_watcher(&(job->watcher_list), 
+                                                               client_fd) < 0) {
+                                    return 0;
                                 }
+                                add_job(job_list, job);
+                                FD_SET(job->stdout_fd, all_fds);
+                                FD_SET(job->stderr_fd, all_fds);
+                                announce_fstr_to_client(client_fd, 
+                                           "[SERVER] Job %d created", job->pid);
                             }
                         }
                     }
@@ -195,6 +190,33 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
                     announce_fstr_to_client(client_fd, "[SERVER] Invalid command: %s", msg);
                 } else if (kill_job(job_list, pid) == 1) {
                     announce_fstr_to_client(client_fd, "[SERVER] Job %d not found", pid);
+                }
+                break;
+            }
+            case CMD_WATCHJOB:
+            {
+                char *pid_str = strtok(NULL, " ");
+                int pid;
+                if (pid_str == NULL || (pid = strtol(pid_str, NULL, 10)) <= 0) {
+                    announce_fstr_to_client(client_fd, 
+                                            "[SERVER] Invalid command: %s", 
+                                            msg);
+                } else {
+                    int result = remove_watcher_by_pid(job_list, pid, 
+                                                       client_fd);
+                    if (result == 0) {
+                        announce_fstr_to_client(client_fd, 
+                                     "[SERVER] No longer watching job %d", pid);
+                    } else if (result == 1) {
+                        announce_fstr_to_client(client_fd, 
+                                              "[SERVER] Job %d not found", pid);
+                    } else {
+                        if (add_watcher_by_pid(job_list, pid, client_fd) < 0) {
+                            return 0;
+                        }
+                        announce_fstr_to_client(client_fd, 
+                                               "[SERVER] Watching job %d", pid);
+                    }
                 }
                 break;
             }

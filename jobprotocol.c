@@ -155,6 +155,31 @@ int kill_job_node(JobNode *job) {
     return 0;
 }
 
+int remove_watcher(WatcherList *watcher_list, int client_fd) {
+    WatcherNode **previous = &(watcher_list->first);
+    for (WatcherNode *watcher = watcher_list->first; watcher != NULL; watcher = watcher->next) {
+        if (watcher->client_fd == client_fd) {
+            *previous = watcher->next;
+            delete_watcher_node(watcher);
+            return 0;
+        }
+        previous = &(watcher->next);
+    }
+    
+    return 1;
+}
+
+void remove_client_from_all_watchers(JobList *job_list, int client_fd) {
+    for (JobNode *job = job_list->first; job != NULL; job = job->next) {
+        remove_watcher(&(job->watcher_list), client_fd);
+    }
+}
+
+int delete_watcher_node(WatcherNode *watcher) {
+    free(watcher);
+    return 0;
+}
+
 int find_network_newline(const char *buf, int n) {
     for (int i = 0; i < n - 1; i++) {
         if (buf[i] == '\r' && buf[i + 1] == '\n') {

@@ -40,7 +40,7 @@ void sigint_handler(int code) {
     sigint_received = 1;
 }
 
-// TODO: SIGCHLD (child stopped or terminated) handler: mark jobs as dead
+// SIGCHLD (child stopped or terminated) handler: mark jobs as dead
 void sigchld_handler(int code) {
     int stat;
     int pid = wait(&stat);
@@ -77,15 +77,18 @@ int setup_new_client(int listen_fd, Client *clients) {
  * Return the highest fd between all clients.
  */
 int remove_client(int listen_fd, int client_index, Client *clients, JobList *job_list) {
-    close(clients[client_index].socket_fd);
+    int client_fd = clients[client_index].socket_fd;
+
+    close(client_fd);
 
     client_count--;
     for (int i = client_index; i < client_count; i++) {
         clients[i] = clients[i + 1];
     }
 
-    // TODO: Remove client from jobs and kill empty jobs
-
+    // Remove client from jobs
+    remove_client_from_all_watchers(job_list, client_fd);
+    
     return get_highest_fd(listen_fd, clients, job_list);
 }
 
@@ -282,19 +285,54 @@ int announce_fstr_to_client(int client_fd, const char *format, ...) {
  * clients. Returns 0 on success, 1 on failed/incomplete write, or -1 in
  * case of error.
  */
-int announce_buf_to_watchers(WatcherList *watcher_list, char *buf, int buflen);
+int announce_buf_to_watchers(WatcherList *watcher_list, char *buf, int buflen) {
+    buf[buflen] = '\n';
+    write(STDOUT_FILENO, buf, buflen + 1);
+
+    buf[buflen] = '\r';
+    buf[buflen + 1] = '\n';
+
+    int error = 0;
+    for (WatcherNode *watcher = watcher_list->first; watcher != NULL; watcher = watcher->next) {
+        int res = write_buf_to_client(watcher->client_fd, buf, buflen + 2);
+        if (res < 0) {
+            return -1;
+        }
+        error += res;
+    }
+    return error ? 1 : 0;
+}
 
 /* Print string to stdout, and send network-newline string to a list of
  * clients. Returns 0 on success, 1 on failed/incomplete write, 2 if the
  * string is too large, or -1 in case of error.
  */
-int announce_str_to_watchers(WatcherList *watcher_list, char *str);
+int announce_str_to_watchers(WatcherList *watcher_list, char *str) {
+    int len = strlen(str);
+    if (len > BUFSIZE - 2) {
+        return 2;
+    }
+
+    char buf[BUFSIZE];
+    strncpy(buf, str, BUFSIZE - 2);
+    return announce_buf_to_watchers(watcher_list, buf, len);
+}
 
 /* Print formatted string to stdout, and send network-newline string to a list of
  * clients. Returns 0 on success, 1 on failed/incomplete write, 2 if the string
  * is too large, or -1 in case of error.
  */
-int announce_fstr_to_watchers(WatcherList *watcher_list, const char *format, ...);
+int announce_fstr_to_watchers(WatcherList *watcher_list, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+
+    char msg[BUFSIZE + 1]; // vsnprintf will add a NULL terminator, so we need +1 byte
+    vsnprintf(msg, BUFSIZE - 1, format, args); // need to make sure we have space for \r\n
+
+    va_end(args);
+
+    return announce_str_to_watchers(watcher_list, msg);
+}
 
 /*
  *  Childcare
@@ -335,18 +373,17 @@ void process_job_output(JobNode *job_node, int fd, Buffer *buffer, char *format)
     } 
 
     WatcherList *watchers = &(job_node->watcher_list);
-    WatcherNode *first = watchers->first;
 
     int msg_len;
     char *msg;
     while ((msg = get_next_msg(buffer, &msg_len, NEWLINE_LF)) != NULL) {
         msg[msg_len - 1] = '\0';
         
-        announce_fstr_to_client(first->client_fd, format, job_node->pid, msg);
+        announce_fstr_to_watchers(watchers, format, job_node->pid, msg);
     }
 
     if (is_buffer_full(buffer) && buffer->consumed == 0) {
-        announce_fstr_to_client(first->client_fd, 
+        announce_fstr_to_watchers(watchers, 
                         "*(SERVER)* Buffer from job %d is full. Aborting job.", 
                         job_node->pid);
         kill_job_node(job_node);
@@ -365,25 +402,7 @@ int process_dead_children(JobList *job_list, fd_set *all_fds) {
 
     for (JobNode *job = job_list->first; job != NULL; job = *tail) {
         if (job->dead) {
-            *tail = job->next;
-
-            WatcherList *watchers = &(job->watcher_list);
-            WatcherNode *first_watcher = watchers->first;
-            
-            if (WIFEXITED(job->wait_status)) {
-                announce_fstr_to_client(first_watcher->client_fd, 
-                        "[JOB %d] Exited with status %d", job->pid, 
-                        WEXITSTATUS(job->wait_status));
-            } else {
-                announce_fstr_to_client(first_watcher->client_fd, 
-                        "[Job %d] Exited due to signal", job->pid);
-            }
-
-            FD_CLR(job->stdout_fd, all_fds);
-            FD_CLR(job->stderr_fd, all_fds);
-            delete_job_node(job);
-
-            job_list->count--;
+            *tail = process_dead_child(job_list, job, all_fds);
             dead_children++;
         } else {
             tail = &(job->next);
@@ -396,7 +415,29 @@ int process_dead_children(JobList *job_list, fd_set *all_fds) {
 /* Remove the given child from the job list, announce to watchers.
  * Returns the next node that the job pointed to.
  */
-JobNode *process_dead_child(JobList *job_list, JobNode *dead_job, fd_set *all_fds);
+JobNode *process_dead_child(JobList *job_list, JobNode *dead_job, fd_set *all_fds) {    
+    JobNode *next = dead_job->next;
+    int pid = dead_job->pid;
+    int wait_status = dead_job->wait_status;
+    WatcherList *watchers = &(dead_job->watcher_list);
+    
+    if (WIFEXITED(wait_status)) {
+        announce_fstr_to_watchers(watchers, 
+                "[JOB %d] Exited with status %d", pid, 
+                WEXITSTATUS(wait_status));
+    } else {
+        announce_fstr_to_watchers(watchers, 
+                "[Job %d] Exited due to signal", pid);
+    }
+
+    FD_CLR(dead_job->stdout_fd, all_fds);
+    FD_CLR(dead_job->stderr_fd, all_fds);
+    delete_job_node(dead_job);
+
+    job_list->count--;
+
+    return next;
+}
 
 /*
  *  Misc

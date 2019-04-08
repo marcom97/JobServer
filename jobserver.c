@@ -117,7 +117,7 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
         log_len = strlen(cmd_log);
         cmd_log[log_len] = '\n';
         write(STDOUT_FILENO, cmd_log, log_len + 1);
-        
+
         char cpy[msg_len - 1];
         strncpy(cpy, msg, msg_len - 1);
         JobCommand command = get_job_command(cpy);
@@ -232,6 +232,7 @@ int process_client_request(Client *client, JobList *job_list, fd_set *all_fds) {
 
     shift_buffer(client_buf);
 
+    errno = 0;
     return 0;
 }
 
@@ -507,8 +508,8 @@ void clean_exit(int listen_fd, Client *clients, JobList *job_list, int exit_stat
     char log[] = "[SERVER] Shutting down\n";
     write(STDOUT_FILENO, log, sizeof(log) - 1);
 
-    //kill_all_jobs(job_list);
-    //empty_job_list(job_list);
+    kill_all_jobs(job_list);
+    empty_job_list(job_list);
 
     exit(exit_status);
 }
@@ -554,11 +555,17 @@ int main(void) {
     while (!sigint_received) {
 	    // Use select to wait on fds, also perform any necessary checks 
 	    // for errors or received signals
+        errno = 0;
         fd_set retread = readfds;
         if (select(nfds, &retread, NULL, NULL, NULL) > 0) {
             // Accept incoming connections
             if (client_count < MAX_CLIENTS && FD_ISSET(listen_fd, &retread)) {                  int new_fd = setup_new_client(listen_fd, clients);
-                if (new_fd >= 0) {
+                if (new_fd < 0) {
+                    if (errno != EWOULDBLOCK && errno != EAGAIN) {
+                        clean_exit(listen_fd, clients, &job_list, 1);
+                    }
+                    errno = 0;
+                } else {
                     FD_SET(new_fd, &readfds);
                     if (new_fd >= nfds) {
                         nfds = new_fd + 1;
@@ -576,6 +583,9 @@ int main(void) {
                 if (FD_ISSET(clients[i].socket_fd, &retread)) {
                     int client_fd = process_client_request(clients + i, 
                                                            &job_list, &readfds);
+                    if (errno) {
+                        clean_exit(listen_fd, clients, &job_list, 1);
+                    }
                     if (client_fd > 0) {
                         nfds = remove_client(listen_fd, i, clients, &job_list)
                                                                             + 1;
@@ -596,6 +606,8 @@ int main(void) {
         } else if (errno == EINTR) {
             process_dead_children(&job_list, &readfds);
             nfds = get_highest_fd(listen_fd, clients, &job_list) + 1;
+        } else {
+            clean_exit(listen_fd, clients, &job_list, 1);
         }
     }
 

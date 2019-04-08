@@ -126,6 +126,17 @@ int mark_job_dead(JobList *job_list, int pid, int stat) {
     return -1;
 }
 
+int empty_job_list(JobList *job_list) {
+    JobNode *next;
+    for (JobNode *job = job_list->first; job != NULL; job = next) {
+        next = job->next;
+        delete_job_node(job);
+    }
+    job_list->first = NULL;
+    job_list->count = 0;
+    return 0;
+} 
+
 int delete_job_node(JobNode *job) {
     close(job->stdout_fd);
     close(job->stderr_fd);
@@ -136,11 +147,13 @@ int delete_job_node(JobNode *job) {
     return 0;
 }
 
-int empty_watcher_list(WatcherList *watchers) {
-    free(watchers->first);
-    watchers->first = NULL;
-
-    return 0;
+int kill_all_jobs(JobList *job_list) {
+    int job_count = 0;
+    for (JobNode *job = job_list->first; job != NULL; job = job->next) {
+        kill_job_node(job);
+        job_count++;
+    }
+    return job_count;
 }
 
 int kill_job_node(JobNode *job) {
@@ -208,6 +221,17 @@ int remove_watcher_by_pid(JobList *job_list, int pid, int client_fd) {
         }
     }
     return 1;
+}
+
+int empty_watcher_list(WatcherList *watchers) {
+    WatcherNode *next;
+    for (WatcherNode *watcher = watchers->first; watcher != NULL; watcher = next) {
+        next = watcher->next;
+        free(watcher);
+    }
+    watchers->first = NULL;
+    watchers->count = 0;
+    return 0;
 }
 
 int delete_watcher_node(WatcherNode *watcher) {
